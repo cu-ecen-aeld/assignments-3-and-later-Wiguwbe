@@ -1,3 +1,10 @@
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <sys/wait.h>
+#include <sys/types.h>
+
 #include "systemcalls.h"
 
 /**
@@ -16,8 +23,8 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
-    return true;
+    return !system(cmd);
+    //return true;
 }
 
 /**
@@ -45,9 +52,6 @@ bool do_exec(int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 /*
  * TODO:
@@ -58,10 +62,35 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t pid = fork();
+    int child_status;
+    if(pid < 0)
+    {
+        // failed to fork
+        return false;
+    }
+    if(!pid)
+    {
+        // on child
+        execv(command[0], command);
+        // error
+        exit(1);
+    }
+    else
+    {
+        // on parent
+        pid_t r = waitpid(pid, &child_status, 0);
+        // assert r == pid
+        if(r<0)
+        {
+            // what to do?
+            return false;
+        }
+    }
 
     va_end(args);
 
-    return true;
+    return WEXITSTATUS(child_status) == 0;
 }
 
 /**
@@ -80,9 +109,6 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 
 /*
@@ -92,8 +118,47 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    int redirect_fd = open(outputfile, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+    if(redirect_fd < 0)
+    {
+        // panic
+        return false;
+    }
+    pid_t pid = fork();
+    int child_status;
+    if(pid < 0)
+    {
+        close(redirect_fd);
+        // failed to fork
+        return false;
+    }
+    if(!pid)
+    {
+        // on child
+        if(dup2(redirect_fd, STDOUT_FILENO) < 0)
+        {
+            // error
+            exit(1);
+        }
+
+        execv(command[0], command);
+        // error
+        exit(1);
+    }
+    else
+    {
+        // on parent
+        close(redirect_fd);
+        pid_t r = waitpid(pid, &child_status, 0);
+        // assert r == pid
+        if(r<0)
+        {
+            // what to do?
+            return false;
+        }
+    }
 
     va_end(args);
 
-    return true;
+    return WEXITSTATUS(child_status) == 0;
 }
