@@ -18,7 +18,7 @@
 
 static int _run = 1;
 
-void _handle_signal(int)
+void _handle_signal(int sig)
 {
 	// don't run next loop
 	_run = 0;
