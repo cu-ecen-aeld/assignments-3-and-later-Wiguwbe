@@ -5,6 +5,7 @@
 #include <fcntl.h>
 
 #include <signal.h>
+#include <time.h>
 
 #include <syslog.h>
 #include <errno.h>
@@ -13,8 +14,29 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define READ_SIZE 4096
+#include <pthread.h>
+
+#define READ_SIZE 512
 #define TGT_FILE "/var/tmp/aesdsocketdata"
+
+struct thread_data {
+	// shared mutex
+	pthread_mutex_t *mutex;
+	// socket connection
+	int client_fd;
+	// client address
+	struct sockaddr_in client_addr;
+};
+
+struct ll_node {
+	pthread_t tid;
+
+	// the thread data, avoid multiple calls to malloc
+	// will be passed to the thread
+	struct thread_data td;
+
+	struct ll_node *next;
+};
 
 static int _run = 1;
 
@@ -24,15 +46,229 @@ void _handle_signal(int sig)
 	_run = 0;
 }
 
+void * _do_thread(void *data)
+{
+	struct thread_data *td = (struct thread_data*)data;
+	int client_fd = td->client_fd;
+
+	// log
+	syslog(LOG_DEBUG, "Accepted connection from %s", inet_ntoa(td->client_addr.sin_addr));
+
+	int buffer_size = READ_SIZE;
+	char *buffer = malloc(buffer_size);
+	if(!buffer)
+	{
+		syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
+		goto _fini;
+	}
+
+	// read loop
+	int read_len = 0;
+	int buffer_offset = 0;
+	char *nl = NULL;
+	while((read_len = recv(client_fd, buffer+buffer_offset, READ_SIZE, 0)) > 0)
+	{
+		// look for '\n'
+		if((nl = memchr(buffer+buffer_offset, '\n', read_len)) != NULL)
+			break;
+		// else, allocate more space on buffer, and continue
+		char *nbuffer = (char*)realloc(buffer, buffer_size + read_len);
+		if(!nbuffer)
+		{
+			syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
+			// set error for later
+			nl = NULL;
+			break;
+		}
+		// new buffer (may be the same)
+		buffer = nbuffer;
+		buffer_size += read_len;
+		buffer_offset += read_len;
+	}
+	// if read_len < 0 --> failed to read from client
+	if(read_len < 0)
+	{
+		syslog(LOG_ERR, "failed to read from client: %s", strerror(errno));
+		// don't do rest of loop
+		goto _fini;
+	}
+	// if read_len == 0 --> if it didn't read anything, it should've caught the _newline_, this shouldn't happen
+	// if nl==NULL --> failed to allocate memory
+	if(nl)
+	{
+		// we got a message (without errors)
+		int file_fd = open(TGT_FILE, O_RDWR|O_APPEND|O_CREAT, 0644);
+		if(file_fd < 0)
+		{
+			syslog(LOG_ERR, "failed to open/create file: %s", strerror(errno));
+			// trying to avoid "goto"s, but ...
+			goto _fini;
+		}
+		// append to file
+		{
+			/*
+				new scope to keep variables local
+				(gcc will reuse the space allocated to these)
+			*/
+			// write loop
+			int to_write = nl-buffer+1;	// +1 to include the newline
+			int total = to_write;
+			int written = 0;
+			/*
+				ACQUIRE MUTEX
+			*/
+			int r = pthread_mutex_lock(td->mutex);
+			if(r)
+			{
+				syslog(LOG_ERR, "failed to acquire mutex: %s", strerror(r));
+				goto _fini_file;
+			}
+			while(written != total)
+			{
+				int write_status = write(file_fd, buffer+written, to_write);
+				if(write_status < 0)
+				{
+					syslog(LOG_ERR, "failed to write to file: %s", strerror(errno));
+					// release lock
+					pthread_mutex_unlock(td->mutex);	// don't log errors
+					goto _fini_file;	// skip send
+				}
+				written += write_status;
+				to_write -= write_status;
+			}
+			//syncfs(file_fd);
+			if((r = pthread_mutex_unlock(td->mutex)) != 0)
+			{
+				syslog(LOG_ERR, "failed to release mutex: %s", strerror(r));
+				goto _fini_file;
+			}
+			/*
+				RELEASE MUTEX
+			*/
+		}
+		// send file to client
+		{
+			/* see above */
+			int red;	// as in, past tense of "read", but without colliding names
+			int total_read = 0;
+			/*
+				ACQUIRE MUTEX
+			*/
+			int r = pthread_mutex_lock(td->mutex);
+			if(r)
+			{
+				syslog(LOG_ERR, "failed to acquire mutex: %s", strerror(r));
+				goto _fini_file;
+			}
+			// reuse buffer
+			// change to `pread`
+			while((red = pread(file_fd, buffer, READ_SIZE, total_read)) > 0)
+			{
+				// send to client
+				if(send(client_fd, buffer, red, 0) < 0)
+				{
+					syslog(LOG_ERR, "failed to send data to client: %s", strerror(errno));
+					break;	// will release lock in a second
+				}
+				total_read += red;
+			}
+			if((r = pthread_mutex_unlock(td->mutex)) != 0)
+			{
+				syslog(LOG_ERR, "failed to release mutex: %s", strerror(r));
+			}
+			/*
+				RELEASE MUTEX
+			*/
+			if(red < 0)
+			{
+				syslog(LOG_ERR, "failed to read data from file: %s", strerror(errno));
+				// fallthrough
+			}
+			// else (red == 0) , EOF
+		}
+		// close file
+	_fini_file:
+		if(close(file_fd))
+		{
+			syslog(LOG_ERR, "failed to close file: %s", strerror(errno));
+			// fallthrough
+		}
+	}
+	// else, carry one
+_fini:
+	// shutdown
+	if(shutdown(client_fd, SHUT_RDWR))
+	{
+		// wierd?
+		syslog(LOG_ERR, "failed to shutdown client connection: %s", strerror(errno));
+	}
+	// force close of fd
+	close(client_fd);
+	// log
+	syslog(LOG_DEBUG, "Closed connection from %s", inet_ntoa(td->client_addr.sin_addr));
+	// free buffer
+	if(buffer) free(buffer);
+
+	return NULL;
+}
+
+void _timer_thread(union sigval sigval)
+{
+	pthread_mutex_t *mutex = (pthread_mutex_t*)sigval.sival_ptr;
+	struct tm ret;
+	time_t current_time;
+	int r;
+	int output_size = 0;
+	char output[64] = "timestamp:";
+	current_time = time(NULL);
+	localtime_r(&current_time, &ret);
+	r = strftime(output, 64, "timestamp:%a, %d %b %Y %T %z\n", &ret);
+	if(!r)
+	{
+		// need more buffer
+		syslog(LOG_ERR, "failed to strftime");
+		return ;
+	}
+	output_size += r;
+	int file_fd = open(TGT_FILE, O_WRONLY|O_APPEND|O_CREAT, 0644);
+	if(file_fd < 0)
+	{
+		syslog(LOG_ERR, "failed to open/create file: %s", strerror(errno));
+		return;
+	}
+	// lock
+	if((r = pthread_mutex_lock(mutex)) != 0)
+	{
+		syslog(LOG_ERR, "failed to acquire mutex: %s", strerror(r));
+		close(file_fd);
+		return;
+	}
+	if(write(file_fd, output, output_size) != output_size)
+	{
+		syslog(LOG_ERR, "failed to write to file");
+	}
+	else
+	{
+		//syncfs(file_fd);
+	}
+	close(file_fd);
+	if((r = pthread_mutex_unlock(mutex)) != 0)
+	{
+		syslog(LOG_ERR, "failed to release mutex: %s", strerror(r));
+	}
+
+	// all cool then
+}
+
 int main(int argc, char **argv)
 {
 	int server_fd, client_fd;
 	struct sockaddr_in server_addr, client_addr;
 	int client_addr_len;
-	int buffer_size = 0;
-	char *buffer = NULL;
-	char addr_buffer[16];
 	int daemonize = 0;
+	struct ll_node *head = NULL, *tail = NULL;
+	pthread_mutex_t mutex;
+	int r;
 
 	if(argc > 2)
 	{
@@ -120,20 +356,59 @@ int main(int argc, char **argv)
 		close(dev_null_fd);
 	}
 
+	// setup sigaction for 10s timer
+	timer_t se_timer;
+	{
+		// create timer
+		struct sigevent se;
+		memset(&se, 0, sizeof(se));
+		se.sigev_notify = SIGEV_THREAD;
+		se.sigev_value.sival_ptr = &mutex;
+		se.sigev_notify_function = _timer_thread;
+		if(timer_create(CLOCK_MONOTONIC, &se, &se_timer))
+		{
+			syslog(LOG_ERR, "failed to setup timer: %s", strerror(errno));
+			close(server_fd);
+			return -1;
+		}
+		// get current time
+		struct timespec start_time;
+		if(clock_gettime(CLOCK_MONOTONIC, &start_time))
+		{
+			syslog(LOG_ERR, "failed to get current time: %s", strerror(errno));
+			timer_delete(se_timer);
+			close(server_fd);
+			return -1;
+		}
+		// setup timer
+		struct itimerspec tspec;
+		tspec.it_interval.tv_sec = 10;
+		tspec.it_interval.tv_nsec = 0;
+		tspec.it_value.tv_sec = start_time.tv_sec + tspec.it_interval.tv_sec;
+		tspec.it_value.tv_nsec = start_time.tv_nsec + tspec.it_interval.tv_nsec;
+		if(timer_settime(se_timer, TIMER_ABSTIME, &tspec, NULL))
+		{
+			syslog(LOG_ERR, "failed to set timer: %s", strerror(errno));
+			timer_delete(se_timer);
+			close(server_fd);
+			return -1;
+		}
+	}
+
+	// initialize mutex
+	if((r = pthread_mutex_init(&mutex, NULL)) != 0)
+	{
+		syslog(LOG_ERR, "failed to initialize mutex: %s", strerror(r));
+		close(server_fd);
+		timer_delete(se_timer);
+		return -1;
+	}
+
 	if(listen(server_fd, 1))
 	{
 		syslog(LOG_ERR, "failed to listen on socket: %s", strerror(errno));
 		close(server_fd);
-		return -1;
-	}
-
-	// init first buffer
-	buffer_size = READ_SIZE;
-	buffer = (char*)malloc(buffer_size);
-	if(!buffer)
-	{
-		syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
-		close(server_fd);
+		timer_delete(se_timer);
 		return -1;
 	}
 
@@ -150,126 +425,35 @@ int main(int argc, char **argv)
 			break;
 		}
 
-		// log
-		syslog(LOG_DEBUG, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
-
-		// read loop
-		int read_len = 0;
-		int buffer_offset = 0;
-		char *nl = NULL;
-		while((read_len = recv(client_fd, buffer+buffer_offset, READ_SIZE, 0)) > 0)
+		// create linked-list node
+		struct ll_node *new = (struct ll_node*)malloc(sizeof(struct ll_node));
+		if(!new)
 		{
-			// look for '\n'
-			if((nl = memchr(buffer+buffer_offset, '\n', read_len)) != NULL)
-				break;
-			// else, allocate more space on buffer, and continue
-			char *nbuffer = (char*)realloc(buffer, buffer_size + read_len);
-			if(!nbuffer)
-			{
-				syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
-				// set error for later
-				nl = NULL;
-				break;
-			}
-			// new buffer (may be the same)
-			buffer = nbuffer;
-			buffer_size += read_len;
-			buffer_offset += read_len;
+			syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
+			close(client_fd);
+			break;
 		}
-		// if read_len < 0 --> failed to read from client
-		if(read_len < 0)
+		memset(new, 0, sizeof(struct ll_node));
+		new->td.client_addr = client_addr;
+		new->td.client_fd = client_fd;
+		new->td.mutex = &mutex;
+		// start thread
+		if((r = pthread_create(&new->tid, NULL, _do_thread, (void*)&new->td)) != 0)
 		{
-			syslog(LOG_ERR, "failed to read from client: %s", strerror(errno));
-			// don't do rest of loop
-			nl = NULL;
+			syslog(LOG_ERR, "failed to start thread: %s", strerror(r));
+			free(new);
+			close(client_fd);
+			break;
 		}
-		// if read_len == 0 --> if it didn't read anything, it should've caught the _newline_, this shouldn't happen
-		// if nl==NULL --> failed to allocate memory
-		if(nl)
+		// append to list
+		if(!head)
 		{
-			// we got a message (without errors)
-			int file_fd = open(TGT_FILE, O_RDWR|O_APPEND|O_CREAT, 0644);
-			if(file_fd < 0)
-			{
-				syslog(LOG_ERR, "failed to open/create file: %s", strerror(errno));
-				// trying to avoid "goto"s, but ...
-				goto _fini;
-			}
-			// append to file
-			{
-				/*
-					new scope to keep variables local
-					(gcc will reuse the space allocated to these)
-				*/
-				// write loop
-				int to_write = nl-buffer+1;	// +1 to include the newline
-				int total = to_write;
-				int written = 0;
-				while(written != total)
-				{
-					int write_status = write(file_fd, buffer+written, to_write);
-					if(write_status < 0)
-					{
-						syslog(LOG_ERR, "failed to write to file: %s", strerror(errno));
-						close(file_fd);
-						goto _fini;	// skip send
-					}
-					written += write_status;
-					to_write -= write_status;
-				}
-			}
-			// send file to client
-			{
-				/* see above */
-				int red;	// as in, past tense of "read", but without colliding names
-				lseek(file_fd, 0, SEEK_SET);
-				// reuse buffer
-				while((red = read(file_fd, buffer, READ_SIZE)) > 0)
-				{
-					// send to client
-					if(send(client_fd, buffer, red, 0) < 0)
-					{
-						syslog(LOG_ERR, "failed to send data to client: %s", strerror(errno));
-						break;
-					}
-				}
-				if(red < 0)
-				{
-					syslog(LOG_ERR, "failed to read data from file: %s", strerror(errno));
-					// fallthrough
-				}
-				// else (red == 0) , EOF
-			}
-			// close file
-			if(close(file_fd))
-			{
-				syslog(LOG_ERR, "failed to close file: %s", strerror(errno));
-				// fallthrough
-			}
+			head = tail = new;
 		}
-		// else, carry one
-	_fini:
-		// shutdown
-		if(shutdown(client_fd, SHUT_RDWR))
+		else
 		{
-			// wierd?
-			syslog(LOG_ERR, "failed to shutdown client connection: %s", strerror(errno));
-		}
-		// force close of fd
-		close(client_fd);
-		// log
-		syslog(LOG_DEBUG, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
-		// reset buffer
-		{
-			char *nbuffer = realloc(buffer, READ_SIZE);
-			if(!nbuffer)
-			{
-				// why?
-				syslog(LOG_ERR, "failed to allocate memory: %s", strerror(errno));
-				break;
-			}
-			buffer = nbuffer;
-			buffer_size = READ_SIZE;
+			tail->next = new;
+			tail = new;
 		}
 	}
 
@@ -278,6 +462,20 @@ int main(int argc, char **argv)
 		// caught signal
 		syslog(LOG_DEBUG, "Caught signal, exiting");
 	}
+
+	// iterate Linked-list, joining threads and freeing memory
+	while(head)
+	{
+		struct ll_node *next = head->next;
+		if((r = pthread_join(head->tid, NULL)) != 0)
+		{
+			syslog(LOG_ERR, "failed to join thread: %s", strerror(r));
+			break;	// can we continue to iterate?
+		}
+		free(head);
+		head = next;
+	}
+
 	// delete file
 	if(unlink(TGT_FILE))
 	{
@@ -285,8 +483,9 @@ int main(int argc, char **argv)
 		// nothing we can do, fallthrough
 	}
 
+	timer_delete(se_timer);
+
 	// alright, close stuff
-	free(buffer);
 	close(server_fd);
 
 	return 0;
