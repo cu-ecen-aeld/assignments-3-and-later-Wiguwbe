@@ -16,8 +16,16 @@
 
 #include <pthread.h>
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
 #define READ_SIZE 512
+#if USE_AESD_CHAR_DEVICE == 1
+#define TGT_FILE "/dev/aesdchar"
+#else
 #define TGT_FILE "/var/tmp/aesdsocketdata"
+#endif
 
 struct thread_data {
 	// shared mutex
@@ -114,6 +122,7 @@ void * _do_thread(void *data)
 			int to_write = nl-buffer+1;	// +1 to include the newline
 			int total = to_write;
 			int written = 0;
+#if USE_AESD_CHAR_DEVICE != 1
 			/*
 				ACQUIRE MUTEX
 			*/
@@ -123,6 +132,7 @@ void * _do_thread(void *data)
 				syslog(LOG_ERR, "failed to acquire mutex: %s", strerror(r));
 				goto _fini_file;
 			}
+#endif
 			while(written != total)
 			{
 				int write_status = write(file_fd, buffer+written, to_write);
@@ -137,6 +147,7 @@ void * _do_thread(void *data)
 				to_write -= write_status;
 			}
 			//syncfs(file_fd);
+#if USE_AESD_CHAR_DEVICE != 1
 			if((r = pthread_mutex_unlock(td->mutex)) != 0)
 			{
 				syslog(LOG_ERR, "failed to release mutex: %s", strerror(r));
@@ -145,12 +156,14 @@ void * _do_thread(void *data)
 			/*
 				RELEASE MUTEX
 			*/
+#endif
 		}
 		// send file to client
 		{
 			/* see above */
 			int red;	// as in, past tense of "read", but without colliding names
 			int total_read = 0;
+#if USE_AESD_CHAR_DEVICE != 1
 			/*
 				ACQUIRE MUTEX
 			*/
@@ -160,6 +173,7 @@ void * _do_thread(void *data)
 				syslog(LOG_ERR, "failed to acquire mutex: %s", strerror(r));
 				goto _fini_file;
 			}
+#endif
 			// reuse buffer
 			// change to `pread`
 			while((red = pread(file_fd, buffer, READ_SIZE, total_read)) > 0)
@@ -172,6 +186,7 @@ void * _do_thread(void *data)
 				}
 				total_read += red;
 			}
+#if USE_AESD_CHAR_DEVICE != 1
 			if((r = pthread_mutex_unlock(td->mutex)) != 0)
 			{
 				syslog(LOG_ERR, "failed to release mutex: %s", strerror(r));
@@ -179,6 +194,7 @@ void * _do_thread(void *data)
 			/*
 				RELEASE MUTEX
 			*/
+#endif
 			if(red < 0)
 			{
 				syslog(LOG_ERR, "failed to read data from file: %s", strerror(errno));
@@ -212,6 +228,7 @@ _fini:
 	return NULL;
 }
 
+#if USE_AESD_CHAR_DEVICE != 1
 void _timer_thread(union sigval sigval)
 {
 	pthread_mutex_t *mutex = (pthread_mutex_t*)sigval.sival_ptr;
@@ -259,6 +276,7 @@ void _timer_thread(union sigval sigval)
 
 	// all cool then
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -356,6 +374,7 @@ int main(int argc, char **argv)
 		close(dev_null_fd);
 	}
 
+#if USE_AESD_CHAR_DEVICE != 1
 	// setup sigaction for 10s timer
 	timer_t se_timer;
 	{
@@ -394,13 +413,16 @@ int main(int argc, char **argv)
 			return -1;
 		}
 	}
+#endif
 
 	// initialize mutex
 	if((r = pthread_mutex_init(&mutex, NULL)) != 0)
 	{
 		syslog(LOG_ERR, "failed to initialize mutex: %s", strerror(r));
 		close(server_fd);
+#if USE_AESD_CHAR_DEVICE != 1
 		timer_delete(se_timer);
+#endif
 		return -1;
 	}
 
@@ -408,7 +430,9 @@ int main(int argc, char **argv)
 	{
 		syslog(LOG_ERR, "failed to listen on socket: %s", strerror(errno));
 		close(server_fd);
+#if USE_AESD_CHAR_DEVICE != 1
 		timer_delete(se_timer);
+#endif
 		return -1;
 	}
 
@@ -476,6 +500,7 @@ int main(int argc, char **argv)
 		head = next;
 	}
 
+#if USE_AESD_CHAR_DEVICE != 1
 	// delete file
 	if(unlink(TGT_FILE))
 	{
@@ -484,6 +509,7 @@ int main(int argc, char **argv)
 	}
 
 	timer_delete(se_timer);
+#endif
 
 	// alright, close stuff
 	close(server_fd);

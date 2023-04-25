@@ -23,12 +23,31 @@
 #  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
+#include "aesd-circular-buffer.h"
+
 struct aesd_dev
 {
+    /*
+        if we set this as the first member, we don't need to
+        use `container_of` :)
+        (a pointer to this cdev is also a pointer to aesd_dev)
+    */
+    struct cdev cdev;     /* Char device structure      */
+
     /**
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
-    struct cdev cdev;     /* Char device structure      */
+    // the circular buffer
+    struct aesd_circular_buffer circular_buffer;
+    // for read write stuff
+    struct rw_semaphore semaphore;
+};
+
+struct filp_data
+{
+    struct aesd_dev *aesd_dev;
+    // our write buffer
+    struct aesd_buffer_entry buffer_entry;
 };
 
 
