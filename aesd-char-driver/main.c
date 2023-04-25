@@ -83,8 +83,10 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
             break;
         // else
         // copy to user (min(space_left, size))
+        PDEBUG("buffer entry is at %p: (%d) %s", buffer_entry, buffer_entry->size, buffer_entry->buffptr);
         size_t left_in_entry = buffer_entry->size - entry_offset;
         size_t to_copy = space_left > left_in_entry ? left_in_entry : space_left;
+        PDEBUG("copying %d bytes to user", to_copy);
         size_t copied = to_copy - copy_to_user(buf + total_read, buffer_entry->buffptr + entry_offset, to_copy);
         // total_read += ?
         total_read += copied;
