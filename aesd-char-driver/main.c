@@ -76,6 +76,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     // while space_left > 0
     while(space_left > 0)
     {
+        PDEBUG("got %d space left", space_left);
         // if find_entry_for_offset == NULL -> return total_read
         if((buffer_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&fd->aesd_dev->circular_buffer, read_offset, &entry_offset)) == NULL)
             // EOF
@@ -153,6 +154,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         up_write(&fd->aesd_dev->semaphore);
         // free previous
         if(prev_buffer) kfree(prev_buffer);
+        // clean it after copy
+        fd->buffer_entry.buffptr = NULL;
+        fd->buffer_entry.size = 0;
     }
 _ret:
     return retval;
