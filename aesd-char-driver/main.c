@@ -118,7 +118,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         // save previous
         char *prev = fd->buffer_entry.buffptr;
         // kmalloc with added size
-        fd->buffer_entry.buffptr = kmalloc(fd->buffer_entry.size + count, GFD_KERNEL);
+        fd->buffer_entry.buffptr = kmalloc(fd->buffer_entry.size + count, GFP_KERNEL);
         if(!fd->buffer_entry.buffptr)
         {
             fd->buffer_entry.buffptr = prev;    // restore for `release` operation

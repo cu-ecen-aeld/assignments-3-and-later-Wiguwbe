@@ -103,6 +103,7 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
     // check for catch-up (no need to check if we know it's already full)
     else if(buffer->in_offs == buffer->out_offs)
         buffer->full = true;
+    return ret_value;
 }
 
 /**
