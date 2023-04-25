@@ -84,7 +84,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         // copy to user (min(space_left, size))
         size_t left_in_entry = buffer_entry->size - entry_offset;
         size_t to_copy = space_left > left_in_entry ? left_in_entry : space_left;
-        size_t copied = copy_to_user(buf + total_read, buffer_entry->buffptr + entry_offset, to_copy);
+        size_t copied = to_copy - copy_to_user(buf + total_read, buffer_entry->buffptr + entry_offset, to_copy);
         // total_read += ?
         total_read += copied;
         read_offset += copied;
@@ -132,7 +132,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
             kfree(prev);
         }
         // append new data (return number of bytes copied)
-        retval = copy_from_user(fd->buffer_entry.buffptr+fd->buffer_entry.size, buf, count);
+        retval = count - copy_from_user(fd->buffer_entry.buffptr+fd->buffer_entry.size, buf, count);
         fd->buffer_entry.size += retval;
     }
     // check for '\n'
