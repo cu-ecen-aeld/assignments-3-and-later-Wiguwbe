@@ -19,6 +19,7 @@
 #include <linux/fs.h> // file_operations
 #include <linux/rwsem.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include "aesdchar.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
@@ -60,7 +61,6 @@ int aesd_release(struct inode *inode, struct file *filp)
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-    ssize_t retval = 0;
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle read
@@ -77,14 +77,14 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     while(space_left > 0)
     {
         // if find_entry_for_offset == NULL -> return total_read
-        if((buffer_entry = aesd_circular_buffer_find_entry_offset_for_fpos(fd->aesd_dev->circular_buffer, read_offset, &entry_offset)) == NULL)
+        if((buffer_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&fd->aesd_dev->circular_buffer, read_offset, &entry_offset)) == NULL)
             // EOF
             break;
         // else
         // copy to user (min(space_left, size))
-        size_t left_in_entry = buffer_entry.size - entry_offset;
+        size_t left_in_entry = buffer_entry->size - entry_offset;
         size_t to_copy = space_left > left_in_entry ? left_in_entry : space_left;
-        size_t copied = copy_to_user(buf + total_read, buffer_entry.buffptr + entry_offset, to_copy);
+        size_t copied = copy_to_user(buf + total_read, buffer_entry->buffptr + entry_offset, to_copy);
         // total_read += ?
         total_read += copied;
         read_offset += copied;
@@ -101,7 +101,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     // release semaphore
     up_read(&fd->aesd_dev->semaphore);
     *f_pos = (loff_t)read_offset;
-    return total_read;
+    return (ssize_t)total_read;
 }
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
@@ -148,7 +148,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         // acquire semaphore to write
         down_write(&fd->aesd_dev->semaphore);
         // write
-        char *prev_buffer = aesd_circular_buffer_add_entry(fd->aesd_dev->circular_buffer, &fd->buffer_entry);
+        char *prev_buffer = aesd_circular_buffer_add_entry(&fd->aesd_dev->circular_buffer, &fd->buffer_entry);
         // release
         up_write(&fd->aesd_dev->semaphore);
         // free previous

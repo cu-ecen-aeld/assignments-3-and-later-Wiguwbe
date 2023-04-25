@@ -4,7 +4,7 @@
 
 # Add your debugging flag (or not) to CFLAGS
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g -DSCULL_DEBUG # "-O" is needed to expand inlines
+  DEBFLAGS = -O -g # "-O" is needed to expand inlines
 else
   DEBFLAGS = -O2
 endif
@@ -27,4 +27,3 @@ endif
 
 clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
-
