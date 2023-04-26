@@ -118,10 +118,10 @@ void * _do_thread(void *data)
 		}
 		// append to file
 #if USE_AESD_CHAR_DEVICE == 1
-		if(!strncmp("AESDCHAR_IOCSEEKTOP:", buffer, 20))
+		if(!strncmp("AESDCHAR_IOCSEEKTO:", buffer, 19))
 		{
 			// just a seek through IOCTL
-			char *str_x = buffer+20;
+			char *str_x = buffer+19;
 			char *str_y;
 			struct aesd_seekto seekto;
 			// assume no errors on strtol
