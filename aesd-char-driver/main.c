@@ -108,7 +108,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      * TODO: handle write
      */
     struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
-    if(mutex_lock_interruptible(*aesd_dev->save_mutex))
+    if(mutex_lock_interruptible(&aesd_dev->save_mutex))
         return -EINTR;
     // append to buffer
     {
