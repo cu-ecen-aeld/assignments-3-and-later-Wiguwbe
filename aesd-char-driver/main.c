@@ -167,12 +167,12 @@ loff_t aesd_llseek(struct file * filp, loff_t offset, int whence)
 {
     loff_t newpos = 0, buffer_size;
     struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
-    // don't allow writes/reads while we calculate stuff
+    // don't allow writes while we calculate stuff
     /*
         none of the functions we use here block
         (at the time of writing, at least, good luck in the future)
     */
-    down_write(&aesd_dev->semaphore);
+    down_read(&aesd_dev->semaphore);
     buffer_size = aesd_circular_buffer_len(&aesd_dev->circular_buffer);
     switch(whence)
     {
@@ -198,7 +198,7 @@ loff_t aesd_llseek(struct file * filp, loff_t offset, int whence)
     // set it
     filp->f_pos = newpos;
 _end:
-    up_write(&aesd_dev->semaphore);
+    up_read(&aesd_dev->semaphore);
     return newpos;
 }
 
@@ -220,20 +220,21 @@ long aesd_u_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
             if(copy_from_user(&req, (void*)arg, sizeof(req)))
                 // couldn't read all
                 return -EINVAL;
-            // don't allow writes/reads while we update this
-            down_write(&aesd_dev->semaphore);
+            // don't allow writes while we update this
+            down_read(&aesd_dev->semaphore);
             entry = aesd_circular_buffer_get_entry_no(&aesd_dev->circular_buffer, req.write_cmd, &entry_offset);
             if(!entry || req.write_cmd_offset >= entry->size)
             {
-                up_write(&aesd_dev->semaphore);
+                up_read(&aesd_dev->semaphore);
                 return -EINVAL;
             }
             newpos = (loff_t)(entry_offset + req.write_cmd_offset);
             // set it
             filp->f_pos = newpos;
-            up_write(&aesd_dev->semaphore);
+            up_read(&aesd_dev->semaphore);
             // return normally
         }
+        break;
         default:
             return -ENOTTY;
     }
