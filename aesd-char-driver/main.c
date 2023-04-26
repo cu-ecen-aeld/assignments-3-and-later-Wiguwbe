@@ -21,6 +21,8 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -160,8 +162,88 @@ _ret:
     mutex_unlock(&aesd_dev->save_mutex);
     return retval;
 }
+
+loff_t aesd_llseek(struct file * filp, loff_t offset, int whence)
+{
+    loff_t newpos = 0, buffer_size;
+    struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
+    // don't allow writes/reads while we calculate stuff
+    /*
+        none of the functions we use here block
+        (at the time of writing, at least, good luck in the future)
+    */
+    down_write(&aesd_dev->semaphore);
+    buffer_size = aesd_circular_buffer_len(&aesd_dev->circular_buffer);
+    switch(whence)
+    {
+        case SEEK_SET:
+            newpos = offset;
+            break;
+        case SEEK_CUR:
+            newpos = filp->f_pos + offset;
+            break;
+        case SEEK_END:
+            newpos = buffer_size + offset;
+            break;
+        default:
+            newpos = -EINVAL;
+            goto _end;
+    }
+    // don't allow overshoot (aswell as negative offset)
+    if(newpos < 0 || newpos > buffer_size)
+    {
+        newpos = -EINVAL;
+        goto _end;
+    }
+    // set it
+    filp->f_pos = newpos;
+_end:
+    up_write(&aesd_dev->semaphore);
+    return newpos;
+}
+
+long aesd_u_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_seekto req;
+    struct aesd_buffer_entry *entry;
+    struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
+    loff_t newpos;
+    unsigned long long entry_offset;
+
+    if(_IOC_TYPE(cmd) != AESD_IOC_MAGIC || _IOC_NR(cmd) > AESDCHAR_IOC_MAXNR)
+        return -ENOTTY;
+
+    switch(cmd)
+    {
+        case AESDCHAR_IOCSEEKTO:
+        {
+            if(copy_from_user(&req, (void*)arg, sizeof(req)))
+                // couldn't read all
+                return -EINVAL;
+            // don't allow writes/reads while we update this
+            down_write(&aesd_dev->semaphore);
+            entry = aesd_circular_buffer_get_entry_no(&aesd_dev->circular_buffer, req.write_cmd, &entry_offset);
+            if(!entry || req.write_cmd_offset >= entry->size)
+            {
+                up_write(&aesd_dev->semaphore);
+                return -EINVAL;
+            }
+            newpos = (loff_t)(entry_offset + req.write_cmd_offset);
+            // set it
+            filp->f_pos = newpos;
+            up_write(&aesd_dev->semaphore);
+            // return normally
+        }
+        default:
+            return -ENOTTY;
+    }
+
+    return 0;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
+    .llseek =   aesd_llseek,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,

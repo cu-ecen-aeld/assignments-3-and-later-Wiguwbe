@@ -107,6 +107,104 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
 }
 
 /**
+* Gets the current length of the buffer
+* Any necessary locking must be handled by the caller
+* @param buffer the buffer to operate on
+* @return the total length of @param buffer
+*/
+unsigned long long aesd_circular_buffer_len(struct aesd_circular_buffer *buffer)
+{
+    unsigned long long size = 0;
+    uint8_t i, read_offs = buffer->out_offs;
+    bool out_eq_in = buffer->out_offs == buffer->in_offs;
+    for(i=0;i<AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;i++)
+    {
+        if(read_offs == buffer->in_offs&&(
+            (out_eq_in && !buffer->full)
+            || !out_eq_in
+        ))
+            // see notes on above function
+            break;
+
+        size += buffer->entry[read_offs++].size;
+        if(read_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+            read_offs = 0;
+    }
+    return size;
+}
+
+/**
+* Gets entry referenced by @param index from @param buffer
+* The length of text previous to that entry is returned
+* at @param entry_offset.
+* This function does bound-checking
+* Any necessary locking must be handled by the caller
+* @return a pointer to the entry or NULL if not available
+*/
+struct aesd_buffer_entry *aesd_circular_buffer_get_entry_no(struct aesd_circular_buffer *buffer, int index, unsigned long long *entry_offset)
+{
+    unsigned long long len = 0;
+    uint8_t i, read_offs = buffer->out_offs;
+    bool out_eq_in = buffer->out_offs == buffer->in_offs;
+    if(index < 0 || index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        return NULL;
+    // check size of buffer
+    if(!buffer->full)
+    {
+        /*
+            If buffer is full, then the current length would
+            be 10 (or the AESDCHAR_MAX_WRITE...), in which case
+            it's already checked above
+        */
+        int cur_length = buffer->in_offs - buffer->out_offs;
+        /*
+            For the current length to be < 0, that would mean
+            that the in_offs has rolled over.
+            In the current implementation, the buffer rolling
+            over would mean that the buffer was full
+            so this next code would never execute.
+            It will still be here for future reference.
+        */
+        if(cur_length < 0)
+        {
+            /*
+                buffer rolled-over, `out_offs` is in front of `in_offs`
+            */
+            cur_length += AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        }
+        // check the index is in range
+        if(index >= cur_length)
+            return NULL;
+    }
+    for(i=0;i<index;i++)
+    {
+        if(read_offs == buffer->in_offs&&(
+            (out_eq_in && !buffer->full)
+            || !out_eq_in
+        ))
+        {
+            // see notes on above function
+            /*
+                In this case we have to return NULL
+                as `index` would be at/after `in_offs`,
+                that is, the buffer currently doesn't have
+                the entry at the desired index.
+
+                Again, with the checks above (index in range),
+                this code should never really happen
+            */
+            return NULL;
+        }
+
+        len += buffer->entry[read_offs++].size;
+        if(read_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+            read_offs = 0;
+    }
+    *entry_offset = len;
+    return buffer->entry + read_offs;
+}
+
+/**
 * Initializes the circular buffer described by @param buffer to an empty struct
 */
 void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)

@@ -16,6 +16,10 @@
 
 #include <pthread.h>
 
+#include <sys/ioctl.h>
+
+#include "aesd_ioctl.h"
+
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
 #endif
@@ -113,6 +117,26 @@ void * _do_thread(void *data)
 			goto _fini;
 		}
 		// append to file
+#if USE_AESD_CHAR_DEVICE == 1
+		if(!strncmp("AESDCHAR_IOCSEEKTOP:", buffer, 20))
+		{
+			// just a seek through IOCTL
+			char *str_x = buffer+20;
+			char *str_y;
+			struct aesd_seekto seekto;
+			// assume no errors on strtol
+			seekto.write_cmd = (uint32_t)strtol(str_x, &str_y, 10);
+			// str_y will be at the comma
+			seekto.write_cmd_offset = (uint32_t)strtol(str_y+1, NULL, 0);
+			if(ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto))
+			{
+				syslog(LOG_ERR, "failed to ioctl file: %s", strerror(errno));
+				// with aesdchar, no mutexes are used
+				goto _fini_file;
+			}
+		}
+		else // normal read
+#endif
 		{
 			/*
 				new scope to keep variables local
@@ -140,7 +164,9 @@ void * _do_thread(void *data)
 				{
 					syslog(LOG_ERR, "failed to write to file: %s", strerror(errno));
 					// release lock
+#if USE_AESD_CHAR_DEVICE != 1
 					pthread_mutex_unlock(td->mutex);	// don't log errors
+#endif
 					goto _fini_file;	// skip send
 				}
 				written += write_status;
