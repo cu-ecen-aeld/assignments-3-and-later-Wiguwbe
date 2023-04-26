@@ -44,14 +44,9 @@ struct aesd_dev
 
     // save buffer
     struct aesd_buffer_entry buffer_entry;
+    struct mutex save_mutex;
 };
 
-struct filp_data
-{
-    struct aesd_dev *aesd_dev;
-    // our write buffer
-    struct aesd_buffer_entry buffer_entry;
-};
 
 
 #endif /* AESD_CHAR_DRIVER_AESDCHAR_H_ */
