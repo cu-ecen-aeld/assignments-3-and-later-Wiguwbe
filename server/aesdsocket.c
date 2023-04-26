@@ -135,7 +135,7 @@ void * _do_thread(void *data)
 				goto _fini_file;
 			}
 		}
-		else // normal read
+		else // normal write
 #endif
 		{
 			/*
@@ -188,7 +188,7 @@ void * _do_thread(void *data)
 		{
 			/* see above */
 			int red;	// as in, past tense of "read", but without colliding names
-			int total_read = 0;
+			//int total_read = 0;
 #if USE_AESD_CHAR_DEVICE != 1
 			/*
 				ACQUIRE MUTEX
@@ -202,7 +202,7 @@ void * _do_thread(void *data)
 #endif
 			// reuse buffer
 			// change to `pread`
-			while((red = pread(file_fd, buffer, READ_SIZE, total_read)) > 0)
+			while((red = read(file_fd, buffer, READ_SIZE)) > 0)
 			{
 				// send to client
 				if(send(client_fd, buffer, red, 0) < 0)
@@ -210,7 +210,7 @@ void * _do_thread(void *data)
 					syslog(LOG_ERR, "failed to send data to client: %s", strerror(errno));
 					break;	// will release lock in a second
 				}
-				total_read += red;
+				//total_read += red;
 			}
 #if USE_AESD_CHAR_DEVICE != 1
 			if((r = pthread_mutex_unlock(td->mutex)) != 0)
