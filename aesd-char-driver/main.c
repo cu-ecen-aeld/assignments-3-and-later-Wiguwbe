@@ -210,7 +210,7 @@ long aesd_u_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     loff_t newpos;
     unsigned long long entry_offset;
 
-    PDEBUG("ioctl command: %d, %d", _IOC_TYPE(cmd), _IOC_NR(cmd))
+    PDEBUG("ioctl command: %d, %d", _IOC_TYPE(cmd), _IOC_NR(cmd));
 
     if(_IOC_TYPE(cmd) != AESD_IOC_MAGIC || _IOC_NR(cmd) > AESDCHAR_IOC_MAXNR)
         return -ENOTTY;
