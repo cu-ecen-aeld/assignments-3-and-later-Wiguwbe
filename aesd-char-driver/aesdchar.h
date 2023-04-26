@@ -41,6 +41,9 @@ struct aesd_dev
     struct aesd_circular_buffer circular_buffer;
     // for read write stuff
     struct rw_semaphore semaphore;
+
+    // save buffer
+    struct aesd_buffer_entry buffer_entry;
 };
 
 struct filp_data

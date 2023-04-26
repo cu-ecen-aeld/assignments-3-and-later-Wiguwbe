@@ -35,12 +35,7 @@ int aesd_open(struct inode *inode, struct file *filp)
     /**
      * TODO: handle open
      */
-    struct filp_data *filp_data = kmalloc(sizeof(struct filp_data), GFP_KERNEL);
-    if(!filp_data)
-        return -ENOMEM;
-    memset(filp_data, 0, sizeof(struct filp_data));
-    filp_data->aesd_dev = (struct aesd_dev*)inode->i_cdev;
-    filp->private_data = filp_data;
+    filp->private_data = inode->i_cdev;
     // all good then
     return 0;
 }
@@ -51,10 +46,7 @@ int aesd_release(struct inode *inode, struct file *filp)
     /**
      * TODO: handle release
      */
-    struct filp_data *fd = (struct filp_data*)filp->private_data;
-    if(fd->buffer_entry.buffptr)    // this shouldn't happen
-        kfree(fd->buffer_entry.buffptr);
-    kfree(fd);
+    // nothing to release
     return 0;
 }
 
@@ -70,9 +62,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
            space_left = count;
     size_t read_offset = (size_t)*f_pos;
     struct aesd_buffer_entry *buffer_entry;
-    struct filp_data *fd = (struct filp_data*)filp->private_data;
+    struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
     // acquire read semaphore
-    down_read(&fd->aesd_dev->semaphore);
+    down_read(&aesd_dev->semaphore);
     // while space_left > 0
     while(space_left > 0)
     {
@@ -102,7 +94,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         }
     }
     // release semaphore
-    up_read(&fd->aesd_dev->semaphore);
+    up_read(&aesd_dev->semaphore);
     *f_pos = (loff_t)read_offset;
     return (ssize_t)total_read;
 }
@@ -115,53 +107,57 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     /**
      * TODO: handle write
      */
-    struct filp_data *fd = (struct filp_data*)filp->private_data;
+    struct aesd_dev *aesd_dev = (struct aesd_dev*)filp->private_data;
+    if(mutex_lock_interruptible(*aesd_dev->save_mutex))
+        return -EINTR;
     // append to buffer
     {
         // save previous
-        char *prev = fd->buffer_entry.buffptr;
+        char *prev = aesd_dev->buffer_entry.buffptr;
         // kmalloc with added size
-        fd->buffer_entry.buffptr = kmalloc(fd->buffer_entry.size + count, GFP_KERNEL);
-        if(!fd->buffer_entry.buffptr)
+        aesd_dev->buffer_entry.buffptr = kmalloc(aesd_dev->buffer_entry.size + count, GFP_KERNEL);
+        if(!aesd_dev->buffer_entry.buffptr)
         {
-            fd->buffer_entry.buffptr = prev;    // restore for `release` operation
+            aesd_dev->buffer_entry.buffptr = prev;    // restore for `release` operation
+            mutex_unlock(&aesd_dev->save_mutex);
             return -ENOMEM;
         }
         //PDEBUG("write buffer is at %p, prev was %p", fd->buffer_entry.buffptr, prev);
         if(prev)
         {
             // copy first portion
-            memcpy(fd->buffer_entry.buffptr, prev, fd->buffer_entry.size);
+            memcpy(aesd_dev->buffer_entry.buffptr, prev, aesd_dev->buffer_entry.size);
             // free previous
             kfree(prev);
         }
         // append new data (return number of bytes copied)
-        retval = count - copy_from_user(fd->buffer_entry.buffptr+fd->buffer_entry.size, buf, count);
-        fd->buffer_entry.size += retval;
+        retval = count - copy_from_user(aesd_dev->buffer_entry.buffptr+aesd_dev->buffer_entry.size, buf, count);
+        aesd_dev->buffer_entry.size += retval;
     }
     // check for '\n'
     {
-        char *newline = memchr(fd->buffer_entry.buffptr, '\n', fd->buffer_entry.size);
+        char *newline = memchr(aesd_dev->buffer_entry.buffptr, '\n', aesd_dev->buffer_entry.size);
         if(!newline)
             goto _ret;
         // else, write to circular_buffer
         // (assume '\n' is the final character)
-        if((newline+1-fd->buffer_entry.buffptr) != fd->buffer_entry.size)
+        if((newline+1-aesd_dev->buffer_entry.buffptr) != aesd_dev->buffer_entry.size)
             PDEBUG("there are characters after command terminator (newline)");
-        fd->buffer_entry.size = newline + 1 - fd->buffer_entry.buffptr;
+        aesd_dev->buffer_entry.size = newline + 1 - aesd_dev->buffer_entry.buffptr;
         // acquire semaphore to write
-        down_write(&fd->aesd_dev->semaphore);
+        down_write(&aesd_dev->semaphore);
         // write
-        char *prev_buffer = aesd_circular_buffer_add_entry(&fd->aesd_dev->circular_buffer, &fd->buffer_entry);
+        char *prev_buffer = aesd_circular_buffer_add_entry(&aesd_dev->aesd_dev->circular_buffer, &aesd_dev->buffer_entry);
         // release
-        up_write(&fd->aesd_dev->semaphore);
+        up_write(&aesd_dev->semaphore);
         // free previous
         if(prev_buffer) kfree(prev_buffer);
         // clean it after copy
-        fd->buffer_entry.buffptr = NULL;
-        fd->buffer_entry.size = 0;
+        aesd_dev->buffer_entry.buffptr = NULL;
+        aesd_dev->buffer_entry.size = 0;
     }
 _ret:
+    mutex_unlock(&aesd_dev->save_mutex);
     return retval;
 }
 struct file_operations aesd_fops = {
@@ -205,6 +201,7 @@ int aesd_init_module(void)
      * TODO: initialize the AESD specific portion of the device
      */
     init_rwsem(&aesd_device.semaphore);
+    mutex_init(&aesd_device.save_mutex);
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -224,7 +221,8 @@ void aesd_cleanup_module(void)
     /**
      * TODO: cleanup AESD specific poritions here as necessary
      */
-    // nothing to be cleaned
+    if(aesd_device.buffer_entry.buffptr)
+        kfree(aesd_device.buffer_entry.buffptr);
 
     unregister_chrdev_region(devno, 1);
 }
