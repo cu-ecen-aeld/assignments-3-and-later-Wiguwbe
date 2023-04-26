@@ -70,7 +70,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     {
         //PDEBUG("got %d space left", space_left);
         // if find_entry_for_offset == NULL -> return total_read
-        if((buffer_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&fd->aesd_dev->circular_buffer, read_offset, &entry_offset)) == NULL)
+        if((buffer_entry = aesd_circular_buffer_find_entry_offset_for_fpos(&aesd_dev->circular_buffer, read_offset, &entry_offset)) == NULL)
             // EOF
             break;
         // else
@@ -147,7 +147,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         // acquire semaphore to write
         down_write(&aesd_dev->semaphore);
         // write
-        char *prev_buffer = aesd_circular_buffer_add_entry(&aesd_dev->aesd_dev->circular_buffer, &aesd_dev->buffer_entry);
+        char *prev_buffer = aesd_circular_buffer_add_entry(&aesd_dev->circular_buffer, &aesd_dev->buffer_entry);
         // release
         up_write(&aesd_dev->semaphore);
         // free previous
