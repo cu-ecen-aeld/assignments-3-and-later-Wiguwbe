@@ -89,7 +89,7 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 */
 char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
-    char *ret_value = buffer->entry[buffer->in_offs].buffptr;
+    char *ret_value = (char*)buffer->entry[buffer->in_offs].buffptr;
     // copy
     memcpy(buffer->entry+buffer->in_offs, add_entry, sizeof(struct aesd_buffer_entry));
     // increment
